@@ -51,9 +51,13 @@ ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{class}=="0x040300"
 ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{class}=="0x03[0-9]*", ATTR{power/control}="auto", ATTR{remove}="1"
 '
 
+# Progress output: STEP|percent|message
+step() {
+    echo "STEP|${1}|${2}"
+}
+
 save_state() {
     mkdir -p "$STATE_DIR"
-
     cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor > "$STATE_DIR/governor" 2>/dev/null
     cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq > "$STATE_DIR/max_freq" 2>/dev/null
     cat "$BACKLIGHT/brightness" > "$STATE_DIR/brightness" 2>/dev/null
@@ -61,12 +65,9 @@ save_state() {
     cat /proc/sys/vm/dirty_writeback_centisecs > "$STATE_DIR/dirty_writeback" 2>/dev/null
     cat /sys/devices/system/cpu/intel_pstate/no_turbo > "$STATE_DIR/turbo" 2>/dev/null
     powerprofilesctl get > "$STATE_DIR/power_profile" 2>/dev/null
-
     rfkill list bluetooth | grep -q "Soft blocked: yes" \
         && echo "blocked" > "$STATE_DIR/bluetooth" \
         || echo "unblocked" > "$STATE_DIR/bluetooth"
-
-    # Save NVIDIA config files we're about to remove
     for f in \
         /etc/udev/rules.d/61-mutter-primary-gpu.rules \
         /etc/environment.d/10-nvidia-session.conf \
@@ -74,8 +75,6 @@ save_state() {
     ; do
         [ -f "$f" ] && cp "$f" "$STATE_DIR/$(basename "$f")"
     done
-
-    # Save nvidia service states
     systemctl is-enabled nvidia-max-perf.service > "$STATE_DIR/nvidia-max-perf-enabled" 2>/dev/null
     systemctl is-enabled nvidia-persistenced.service > "$STATE_DIR/nvidia-persistenced-enabled" 2>/dev/null
 }
@@ -86,30 +85,27 @@ enable_travel() {
         exit 0
     fi
 
-    echo "=== Enabling Travel Mode ==="
+    step 5 "Saving current system state..."
     save_state
 
-    # ── GPU: Full disable (envycontrol approach) ──
-
-    # 1. Blacklist + alias off all NVIDIA modules
+    step 15 "Blacklisting NVIDIA kernel modules..."
     echo "$BLACKLIST_CONTENT" > "$BLACKLIST_PATH"
 
-    # 2. Udev rule to physically REMOVE NVIDIA from PCI bus on boot
+    step 25 "Creating udev rule to remove GPU from PCI bus..."
     echo "$UDEV_REMOVE_CONTENT" > "$UDEV_REMOVE_PATH"
 
-    # 3. Remove NVIDIA-specific configs (saved in state dir)
+    step 30 "Removing NVIDIA compositor configs..."
     rm -f /etc/udev/rules.d/61-mutter-primary-gpu.rules
     rm -f /etc/environment.d/10-nvidia-session.conf
 
-    # 4. Disable NVIDIA services
+    step 35 "Disabling NVIDIA services..."
     systemctl stop nvidia-powerd.service 2>/dev/null
     systemctl stop nvidia-persistenced.service 2>/dev/null
     systemctl stop nvidia-max-perf.service 2>/dev/null
     systemctl disable nvidia-max-perf.service 2>/dev/null
     systemctl disable nvidia-persistenced.service 2>/dev/null
 
-    # ── CPU: Powersave ──
-
+    step 40 "Setting CPU to powersave (2.0 GHz, turbo off)..."
     for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
         echo powersave > "$cpu" 2>/dev/null
     done
@@ -118,29 +114,27 @@ enable_travel() {
     done
     echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null
 
-    # ── Power profile ──
+    step 50 "Setting power profile to power-saver..."
     powerprofilesctl set power-saver 2>/dev/null
 
-    # ── Bluetooth off ──
+    step 55 "Disabling Bluetooth..."
     rfkill block bluetooth 2>/dev/null
 
-    # ── Brightness 40% ──
+    step 58 "Lowering brightness to 40%..."
     if [ -f "$BACKLIGHT/max_brightness" ]; then
         MAX=$(cat "$BACKLIGHT/max_brightness")
         echo $((MAX * 40 / 100)) > "$BACKLIGHT/brightness"
     fi
 
-    # ── Kernel power tweaks ──
+    step 62 "Applying kernel power optimizations..."
     echo 5 > /proc/sys/vm/laptop_mode 2>/dev/null
     echo 1500 > /proc/sys/vm/dirty_writeback_centisecs 2>/dev/null
-
-    # ── Extra power savings ──
     echo 1 > /sys/module/snd_hda_intel/parameters/power_save 2>/dev/null
     for iface in /sys/class/net/e*; do
         ethtool -s "$(basename "$iface")" wol d 2>/dev/null
     done
 
-    # ── Boot service ──
+    step 65 "Creating boot service..."
     cat > /etc/systemd/system/travel-mode-boot.service << 'UNIT'
 [Unit]
 Description=Travel Mode Boot Power Configuration
@@ -157,15 +151,13 @@ UNIT
     systemctl daemon-reload
     systemctl enable travel-mode-boot.service
 
-    # ── Regenerate initramfs (SYNCHRONOUS — must complete before reboot) ──
-    echo "Rebuilding initramfs (this takes ~30s)..."
+    step 70 "Rebuilding initramfs (this takes a moment)..."
     dracut --force --regenerate-all 2>/dev/null
 
-    # ── Set flag ──
+    step 95 "Setting travel mode flag..."
     touch "$FLAG"
 
-    echo "=== Travel Mode Enabled ==="
-    echo "Reboot required. NVIDIA GPU will be physically removed from PCI bus."
+    step 100 "Travel Mode enabled. Ready to reboot."
 }
 
 disable_travel() {
@@ -174,18 +166,14 @@ disable_travel() {
         exit 0
     fi
 
-    echo "=== Disabling Travel Mode ==="
-
-    # ── GPU: Remove blacklist and udev removal rule ──
+    step 5 "Removing NVIDIA blacklist..."
     rm -f "$BLACKLIST_PATH"
+
+    step 10 "Removing GPU PCI removal rule..."
     rm -f "$UDEV_REMOVE_PATH"
 
-    # ── Restore NVIDIA config files ──
-    for f in \
-        61-mutter-primary-gpu.rules \
-        10-nvidia-session.conf \
-        nvidia.conf \
-    ; do
+    step 20 "Restoring NVIDIA config files..."
+    for f in 61-mutter-primary-gpu.rules 10-nvidia-session.conf nvidia.conf; do
         if [ -f "$STATE_DIR/$f" ]; then
             case "$f" in
                 61-mutter-primary-gpu.rules) cp "$STATE_DIR/$f" /etc/udev/rules.d/"$f" ;;
@@ -195,7 +183,7 @@ disable_travel() {
         fi
     done
 
-    # ── Restore NVIDIA services ──
+    step 30 "Restoring NVIDIA services..."
     if [ -f "$STATE_DIR/nvidia-persistenced-enabled" ] && grep -q "enabled" "$STATE_DIR/nvidia-persistenced-enabled"; then
         systemctl enable nvidia-persistenced.service 2>/dev/null
     fi
@@ -203,12 +191,12 @@ disable_travel() {
         systemctl enable nvidia-max-perf.service 2>/dev/null
     fi
 
-    # ── Remove boot service ──
+    step 35 "Removing boot service..."
     systemctl disable travel-mode-boot.service 2>/dev/null
     rm -f /etc/systemd/system/travel-mode-boot.service
     systemctl daemon-reload
 
-    # ── Restore CPU ──
+    step 45 "Restoring CPU settings..."
     if [ -f "$STATE_DIR/governor" ]; then
         GOV=$(cat "$STATE_DIR/governor")
         for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
@@ -221,44 +209,35 @@ disable_travel() {
             echo "$FREQ" > "$cpu" 2>/dev/null
         done
     fi
-    if [ -f "$STATE_DIR/turbo" ]; then
-        cat "$STATE_DIR/turbo" > /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null
-    fi
+    [ -f "$STATE_DIR/turbo" ] && cat "$STATE_DIR/turbo" > /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null
 
-    # ── Restore power profile ──
-    if [ -f "$STATE_DIR/power_profile" ]; then
-        powerprofilesctl set "$(cat "$STATE_DIR/power_profile")" 2>/dev/null
-    fi
+    step 55 "Restoring power profile..."
+    [ -f "$STATE_DIR/power_profile" ] && powerprofilesctl set "$(cat "$STATE_DIR/power_profile")" 2>/dev/null
 
-    # ── Restore bluetooth ──
+    step 60 "Restoring Bluetooth..."
     if [ -f "$STATE_DIR/bluetooth" ] && [ "$(cat "$STATE_DIR/bluetooth")" = "unblocked" ]; then
         rfkill unblock bluetooth 2>/dev/null
     fi
 
-    # ── Restore brightness ──
-    if [ -f "$STATE_DIR/brightness" ]; then
-        cat "$STATE_DIR/brightness" > "$BACKLIGHT/brightness" 2>/dev/null
-    fi
+    step 65 "Restoring brightness..."
+    [ -f "$STATE_DIR/brightness" ] && cat "$STATE_DIR/brightness" > "$BACKLIGHT/brightness" 2>/dev/null
 
-    # ── Restore kernel params ──
+    step 68 "Restoring kernel parameters..."
     [ -f "$STATE_DIR/laptop_mode" ] && cat "$STATE_DIR/laptop_mode" > /proc/sys/vm/laptop_mode 2>/dev/null
     [ -f "$STATE_DIR/dirty_writeback" ] && cat "$STATE_DIR/dirty_writeback" > /proc/sys/vm/dirty_writeback_centisecs 2>/dev/null
 
-    # ── Regenerate initramfs WITH nvidia (SYNCHRONOUS) ──
-    echo "Rebuilding initramfs (this takes ~30s)..."
+    step 70 "Rebuilding initramfs with NVIDIA (this takes a moment)..."
     dracut --force --regenerate-all 2>/dev/null
 
-    # ── Cleanup ──
+    step 95 "Cleaning up..."
     rm -f "$FLAG"
     rm -rf "$STATE_DIR"
 
-    echo "=== Travel Mode Disabled ==="
-    echo "Reboot required. NVIDIA GPU will be restored."
+    step 100 "Travel Mode disabled. Ready to reboot."
 }
 
 apply_boot() {
     [ ! -f "$FLAG" ] && exit 0
-
     for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
         echo powersave > "$cpu" 2>/dev/null
     done
@@ -271,7 +250,6 @@ apply_boot() {
     echo 1500 > /proc/sys/vm/dirty_writeback_centisecs 2>/dev/null
     rfkill block bluetooth 2>/dev/null
     echo 1 > /sys/module/snd_hda_intel/parameters/power_save 2>/dev/null
-
     if [ -f "$BACKLIGHT/max_brightness" ]; then
         MAX=$(cat "$BACKLIGHT/max_brightness")
         echo $((MAX * 40 / 100)) > "$BACKLIGHT/brightness"
@@ -279,20 +257,22 @@ apply_boot() {
 }
 
 status() {
-    if [ -f "$FLAG" ]; then
-        echo "active"
-    else
-        echo "inactive"
-    fi
+    [ -f "$FLAG" ] && echo "active" || echo "inactive"
+}
+
+force_reboot() {
+    # Hard reboot: skips all inhibitors and doesn't wait for apps
+    systemctl reboot --force
 }
 
 case "${1:-}" in
     enable)  enable_travel ;;
     disable) disable_travel ;;
     apply-boot) apply_boot ;;
+    force-reboot) force_reboot ;;
     status)  status ;;
     *)
-        echo "Usage: travel-mode {enable|disable|status}"
+        echo "Usage: travel-mode {enable|disable|force-reboot|status}"
         exit 1
         ;;
 esac
