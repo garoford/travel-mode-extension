@@ -1,0 +1,8 @@
+{
+  "uuid": "travel-mode@garoford",
+  "name": "Travel Mode",
+  "description": "Battery optimization toggle for hybrid NVIDIA laptops. Disables dGPU, lowers resolution to 1600x900@60Hz, and applies aggressive power saving for maximum battery life.",
+  "shell-version": ["46", "47", "48", "49"],
+  "version": 1,
+  "url": "https://github.com/garoford/travel-mode"
+}

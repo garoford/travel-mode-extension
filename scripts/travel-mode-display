@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""
+Travel Mode Display Configuration
+Sets eDP-1 to 1600x900@60Hz and disables external monitors.
+Runs as user autostart — requires python3-dbus.
+"""
+import os, sys, time
+
+FLAG = "/etc/travel-mode-active"
+
+def enable_travel_display():
+    import dbus
+
+    bus = dbus.SessionBus()
+    obj = bus.get_object("org.gnome.Mutter.DisplayConfig",
+                         "/org/gnome/Mutter/DisplayConfig")
+    iface = dbus.Interface(obj, "org.gnome.Mutter.DisplayConfig")
+
+    state = iface.GetCurrentState()
+    serial = state[0]
+    monitors = state[1]
+
+    edp_connector = None
+    target_mode = None
+
+    for monitor in monitors:
+        connector = str(monitor[0][0])
+        modes = monitor[1]
+        if "eDP" in connector:
+            edp_connector = connector
+            for mode in modes:
+                mode_id = str(mode[0])
+                w, h = int(mode[1]), int(mode[2])
+                refresh = float(mode[3])
+                if w == 1600 and h == 900 and 59.0 <= refresh <= 61.0:
+                    target_mode = mode_id
+                    break
+
+    if not edp_connector:
+        print("ERROR: No eDP monitor found", file=sys.stderr)
+        sys.exit(1)
+
+    if not target_mode:
+        print("WARNING: 1600x900@60 not available, falling back to 1920x1080@60")
+        for monitor in monitors:
+            if "eDP" in str(monitor[0][0]):
+                for mode in monitor[1]:
+                    w, h = int(mode[1]), int(mode[2])
+                    refresh = float(mode[3])
+                    if w == 1920 and h == 1080 and 59.0 <= refresh <= 61.0:
+                        target_mode = str(mode[0])
+                        break
+                break
+
+    if not target_mode:
+        print("ERROR: No suitable display mode found", file=sys.stderr)
+        sys.exit(1)
+
+    logical_monitors = dbus.Array([
+        dbus.Struct([
+            dbus.Int32(0),
+            dbus.Int32(0),
+            dbus.Double(1.0),
+            dbus.UInt32(0),
+            dbus.Boolean(True),
+            dbus.Array([
+                dbus.Struct([
+                    dbus.String(edp_connector),
+                    dbus.String(target_mode),
+                    dbus.Dictionary({}, signature="sv")
+                ], signature="ssa{sv}")
+            ], signature="(ssa{sv})")
+        ], signature="iidub a(ssa{sv})")
+    ], signature="(iiduba(ssa{sv}))")
+
+    props = dbus.Dictionary({}, signature="sv")
+
+    iface.ApplyMonitorsConfig(
+        dbus.UInt32(serial),
+        dbus.UInt32(2),
+        logical_monitors,
+        props
+    )
+    print(f"Applied: {edp_connector} @ {target_mode}")
+
+if __name__ == "__main__":
+    if not os.path.exists(FLAG):
+        sys.exit(0)
+
+    time.sleep(4)
+    try:
+        enable_travel_display()
+    except Exception as e:
+        print(f"Display config error: {e}", file=sys.stderr)
+        sys.exit(1)

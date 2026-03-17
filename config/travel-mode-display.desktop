@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Travel Mode Display
+Exec=/usr/local/bin/travel-mode-display
+Hidden=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

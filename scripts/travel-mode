@@ -1,0 +1,235 @@
+#!/bin/bash
+# Travel Mode - Battery optimization for hybrid NVIDIA laptops
+# Disables dGPU, lowers resolution/Hz, maximizes battery life
+#
+# Usage: travel-mode {enable|disable|apply-boot|status}
+
+STATE_DIR="/etc/travel-mode-state"
+FLAG="/etc/travel-mode-active"
+NVIDIA_PCI="0000:01:00.0"
+NVIDIA_AUDIO_PCI="0000:01:00.1"
+BACKLIGHT="/sys/class/backlight/intel_backlight"
+
+save_state() {
+    mkdir -p "$STATE_DIR"
+    cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor > "$STATE_DIR/governor"
+    cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq > "$STATE_DIR/max_freq"
+    cat "$BACKLIGHT/brightness" > "$STATE_DIR/brightness" 2>/dev/null
+    cat /proc/sys/vm/laptop_mode > "$STATE_DIR/laptop_mode"
+    cat /proc/sys/vm/dirty_writeback_centisecs > "$STATE_DIR/dirty_writeback"
+    rfkill list bluetooth | grep -q "Soft blocked: yes" \
+        && echo "blocked" > "$STATE_DIR/bluetooth" \
+        || echo "unblocked" > "$STATE_DIR/bluetooth"
+    cat /sys/devices/system/cpu/intel_pstate/no_turbo > "$STATE_DIR/turbo" 2>/dev/null
+    powerprofilesctl get > "$STATE_DIR/power_profile" 2>/dev/null
+    [ -f /etc/udev/rules.d/61-mutter-primary-gpu.rules ] \
+        && cp /etc/udev/rules.d/61-mutter-primary-gpu.rules "$STATE_DIR/61-mutter-primary-gpu.rules"
+    [ -f /etc/environment.d/10-nvidia-session.conf ] \
+        && cp /etc/environment.d/10-nvidia-session.conf "$STATE_DIR/10-nvidia-session.conf"
+}
+
+enable_travel() {
+    if [ -f "$FLAG" ]; then
+        echo "Travel Mode is already active."
+        exit 0
+    fi
+
+    echo "=== Enabling Travel Mode ==="
+    save_state
+
+    # Blacklist ALL NVIDIA modules — GPU becomes completely invisible
+    cat > /etc/modprobe.d/travel-mode-nvidia.conf << EOF
+blacklist nvidia
+blacklist nvidia_drm
+blacklist nvidia_modeset
+blacklist nvidia_uvm
+blacklist nouveau
+install nvidia /bin/false
+install nvidia_drm /bin/false
+install nvidia_modeset /bin/false
+install nvidia_uvm /bin/false
+EOF
+
+    # Remove NVIDIA udev primary GPU rule (iGPU-only doesn't need it)
+    rm -f /etc/udev/rules.d/61-mutter-primary-gpu.rules
+
+    # Remove NVIDIA Mutter environment vars
+    rm -f /etc/environment.d/10-nvidia-session.conf
+
+    # Boot service to reapply power settings after reboot
+    cat > /etc/systemd/system/travel-mode-boot.service << EOF
+[Unit]
+Description=Travel Mode Boot Power Configuration
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/travel-mode apply-boot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable travel-mode-boot.service
+
+    # CPU: powersave governor, 2.0 GHz max, turbo off
+    for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+        echo powersave > "$cpu" 2>/dev/null
+    done
+    for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_max_freq; do
+        echo 2000000 > "$cpu" 2>/dev/null
+    done
+    echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null
+
+    # Power profile
+    powerprofilesctl set power-saver 2>/dev/null
+
+    # Bluetooth off
+    rfkill block bluetooth 2>/dev/null
+
+    # Brightness to 40%
+    if [ -f "$BACKLIGHT/max_brightness" ]; then
+        MAX=$(cat "$BACKLIGHT/max_brightness")
+        echo $((MAX * 40 / 100)) > "$BACKLIGHT/brightness"
+    fi
+
+    # Kernel power tweaks
+    echo 5 > /proc/sys/vm/laptop_mode
+    echo 1500 > /proc/sys/vm/dirty_writeback_centisecs
+
+    # Stop NVIDIA services
+    systemctl stop nvidia-powerd.service 2>/dev/null
+    systemctl stop nvidia-persistenced.service 2>/dev/null
+    systemctl stop nvidia-max-perf.service 2>/dev/null
+    systemctl disable nvidia-max-perf.service 2>/dev/null
+
+    # PCIe ASPM powersave
+    echo powersave > /sys/module/pcie_aspm/parameters/policy 2>/dev/null
+
+    # Audio codec power save
+    echo 1 > /sys/module/snd_hda_intel/parameters/power_save 2>/dev/null
+
+    # Disable Wake-on-LAN
+    for iface in /sys/class/net/e*; do
+        ethtool -s "$(basename "$iface")" wol d 2>/dev/null
+    done
+
+    # Regenerate initramfs without NVIDIA
+    dracut --force 2>/dev/null &
+
+    touch "$FLAG"
+    echo "=== Travel Mode Enabled — reboot required ==="
+}
+
+disable_travel() {
+    if [ ! -f "$FLAG" ]; then
+        echo "Travel Mode is not active."
+        exit 0
+    fi
+
+    echo "=== Disabling Travel Mode ==="
+
+    rm -f /etc/modprobe.d/travel-mode-nvidia.conf
+
+    # Restore NVIDIA udev rule
+    [ -f "$STATE_DIR/61-mutter-primary-gpu.rules" ] \
+        && cp "$STATE_DIR/61-mutter-primary-gpu.rules" /etc/udev/rules.d/61-mutter-primary-gpu.rules
+
+    # Restore NVIDIA environment vars
+    [ -f "$STATE_DIR/10-nvidia-session.conf" ] \
+        && cp "$STATE_DIR/10-nvidia-session.conf" /etc/environment.d/10-nvidia-session.conf
+
+    # Remove boot service
+    systemctl disable travel-mode-boot.service 2>/dev/null
+    rm -f /etc/systemd/system/travel-mode-boot.service
+    systemctl daemon-reload
+
+    # Restore CPU
+    if [ -f "$STATE_DIR/governor" ]; then
+        GOV=$(cat "$STATE_DIR/governor")
+        for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+            echo "$GOV" > "$cpu" 2>/dev/null
+        done
+    fi
+    if [ -f "$STATE_DIR/max_freq" ]; then
+        FREQ=$(cat "$STATE_DIR/max_freq")
+        for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_max_freq; do
+            echo "$FREQ" > "$cpu" 2>/dev/null
+        done
+    fi
+    [ -f "$STATE_DIR/turbo" ] \
+        && cat "$STATE_DIR/turbo" > /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null
+
+    # Restore power profile
+    [ -f "$STATE_DIR/power_profile" ] \
+        && powerprofilesctl set "$(cat "$STATE_DIR/power_profile")" 2>/dev/null
+
+    # Restore bluetooth
+    if [ -f "$STATE_DIR/bluetooth" ] && [ "$(cat "$STATE_DIR/bluetooth")" = "unblocked" ]; then
+        rfkill unblock bluetooth 2>/dev/null
+    fi
+
+    # Restore brightness
+    [ -f "$STATE_DIR/brightness" ] \
+        && cat "$STATE_DIR/brightness" > "$BACKLIGHT/brightness" 2>/dev/null
+
+    # Restore kernel params
+    [ -f "$STATE_DIR/laptop_mode" ] && cat "$STATE_DIR/laptop_mode" > /proc/sys/vm/laptop_mode
+    [ -f "$STATE_DIR/dirty_writeback" ] && cat "$STATE_DIR/dirty_writeback" > /proc/sys/vm/dirty_writeback_centisecs
+
+    # Re-enable NVIDIA services
+    systemctl enable nvidia-max-perf.service 2>/dev/null
+    systemctl start nvidia-persistenced.service 2>/dev/null
+
+    # Regenerate initramfs with NVIDIA
+    dracut --force 2>/dev/null &
+
+    rm -f "$FLAG"
+    rm -rf "$STATE_DIR"
+    echo "=== Travel Mode Disabled — reboot required ==="
+}
+
+apply_boot() {
+    [ ! -f "$FLAG" ] && exit 0
+
+    for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+        echo powersave > "$cpu" 2>/dev/null
+    done
+    for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_max_freq; do
+        echo 2000000 > "$cpu" 2>/dev/null
+    done
+    echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null
+
+    powerprofilesctl set power-saver 2>/dev/null
+
+    echo 5 > /proc/sys/vm/laptop_mode
+    echo 1500 > /proc/sys/vm/dirty_writeback_centisecs
+
+    if [ -f "$BACKLIGHT/max_brightness" ]; then
+        MAX=$(cat "$BACKLIGHT/max_brightness")
+        echo $((MAX * 40 / 100)) > "$BACKLIGHT/brightness"
+    fi
+
+    rfkill block bluetooth 2>/dev/null
+    echo 1 > /sys/module/snd_hda_intel/parameters/power_save 2>/dev/null
+}
+
+status() {
+    if [ -f "$FLAG" ]; then
+        echo "active"
+    else
+        echo "inactive"
+    fi
+}
+
+case "${1:-}" in
+    enable)  enable_travel ;;
+    disable) disable_travel ;;
+    apply-boot) apply_boot ;;
+    status)  status ;;
+    *)
+        echo "Usage: travel-mode {enable|disable|status}"
+        exit 1
+        ;;
+esac
