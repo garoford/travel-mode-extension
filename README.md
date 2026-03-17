@@ -1,44 +1,52 @@
 # Travel Mode - GNOME Shell Extension
 
-Battery optimization toggle for hybrid NVIDIA laptops (Optimus). Adds a **Travel Mode** button to the GNOME Quick Settings panel.
+Battery optimization toggle for hybrid NVIDIA Optimus laptops. Adds a **Travel Mode** button to the GNOME Quick Settings panel.
 
-> This extension was created with AI assistance for the Acer Nitro AN515-55 (i5-10300H + RTX 3050 Mobile) running Fedora 43 / GNOME 49.
+> Created with AI assistance for the Acer Nitro AN515-55 (i5-10300H + RTX 3050 Mobile) running Fedora 43 / GNOME 49. GPU disable approach inspired by [envycontrol](https://github.com/bayasdev/envycontrol).
 
 ## What it does
 
-### When Travel Mode is **enabled**:
-- **NVIDIA GPU** is completely disabled (blacklisted at module level — invisible to the system)
-- **Display** is set to the laptop's built-in panel at **1600×900 @ 60Hz**
-- **CPU** is limited to **2.0 GHz** in powersave governor with turbo boost disabled
-- **Bluetooth** is turned off
-- **Screen brightness** is lowered to 40%
-- **Power profile** is set to `power-saver`
-- **Kernel tweaks**: laptop_mode, dirty writeback, PCIe ASPM powersave, audio codec power save
+### When enabled:
+| Component | Action |
+|-----------|--------|
+| **NVIDIA GPU** | Blacklisted + physically removed from PCI bus via udev (completely invisible) |
+| **Display** | eDP-1 only at **1600x900 @ 60Hz** (externals disabled) |
+| **CPU** | Powersave governor, **2.0 GHz max**, turbo boost disabled |
+| **Power profile** | `power-saver` |
+| **Bluetooth** | Disabled |
+| **Brightness** | 40% |
+| **Kernel** | laptop_mode, dirty writeback 15s, audio codec power save |
 
-### When Travel Mode is **disabled**:
-- All settings are **restored exactly** to their previous state
-- NVIDIA GPU, CPU frequency, bluetooth, brightness — everything goes back to normal
+### When disabled:
+**Everything is restored to the exact previous state** — GPU, display, CPU frequency, governor, turbo, bluetooth, brightness, power profile, kernel params, all NVIDIA config files and services.
 
-Both actions require a **reboot** to fully apply (the NVIDIA module blacklist takes effect on next boot).
+Both actions require a **reboot** (the GPU removal takes effect via udev on next boot).
+
+## How GPU disable works (envycontrol approach)
+
+1. All NVIDIA kernel modules are blacklisted AND aliased to `off`
+2. A udev rule physically **removes** the NVIDIA device from the PCI bus on boot (`ATTR{remove}="1"`)
+3. The GPU is powered down (`ATTR{power/control}="auto"`) before removal
+4. The initramfs is regenerated without NVIDIA modules
+
+This means `lspci` won't even show the NVIDIA card — it's completely gone until you disable travel mode and reboot.
 
 ## Requirements
 
-- GNOME Shell 46–49
-- Fedora (tested on 43) or any systemd-based distro
+- GNOME Shell 46-49
+- Fedora (tested on 43) or any systemd-based distro with dracut
 - NVIDIA Optimus laptop with `akmod-nvidia` drivers
 - `python3-dbus` (`sudo dnf install python3-dbus`)
-- `polkit` (pre-installed on Fedora)
 
 ## Installation
 
 ```bash
-git clone https://github.com/garoford/travel-mode
-cd travel-mode
+cd ~/Development/travel-mode-extension
 chmod +x install.sh
 ./install.sh
 ```
 
-Then **log out and back in** for the toggle to appear.
+Log out and back in for the toggle to appear.
 
 ## Uninstallation
 
@@ -46,50 +54,37 @@ Then **log out and back in** for the toggle to appear.
 ./install.sh --remove
 ```
 
-## Project Structure
+## Manual usage
+
+```bash
+# Enable (asks for password, then reboot)
+pkexec /usr/local/bin/travel-mode enable && sudo reboot
+
+# Disable (asks for password, then reboot)
+pkexec /usr/local/bin/travel-mode disable && sudo reboot
+
+# Check status
+/usr/local/bin/travel-mode status
+```
+
+## Project structure
 
 ```
 travel-mode-extension/
 ├── extension/
-│   ├── metadata.json        # GNOME Shell extension metadata
-│   ├── extension.js         # Quick Settings toggle (GJS/ESM)
+│   ├── metadata.json          # GNOME Shell extension metadata
+│   ├── extension.js           # Quick Settings toggle + modal dialog
 │   └── stylesheet.css
 ├── scripts/
-│   ├── travel-mode          # Backend script (runs as root via pkexec)
-│   └── travel-mode-display  # Display config (runs as user on login)
+│   ├── travel-mode            # Root backend (pkexec): GPU/CPU/power
+│   └── travel-mode-display    # User autostart: display resolution
 ├── config/
-│   ├── org.garoford.travel-mode.policy   # Polkit policy
-│   └── travel-mode-display.desktop       # Autostart entry
-├── install.sh               # Installer/uninstaller
+│   ├── org.garoford.travel-mode.policy   # Polkit auth policy
+│   └── travel-mode-display.desktop       # XDG autostart entry
+├── install.sh
 └── README.md
-```
-
-## How it works
-
-1. The **GNOME Shell extension** adds a toggle to Quick Settings
-2. Clicking the toggle runs `pkexec /usr/local/bin/travel-mode enable|disable`
-3. The **polkit policy** prompts for the user's password
-4. The **travel-mode script** saves current state, applies power settings, blacklists NVIDIA modules, and regenerates initramfs
-5. The system **reboots** automatically
-6. On boot, `travel-mode-boot.service` reapplies CPU/power settings
-7. The `travel-mode-display` autostart script sets the display to 1600×900@60Hz via Mutter DBus
-
-## Manual usage (without the extension)
-
-```bash
-# Check status
-travel-mode status
-
-# Enable (with password prompt)
-pkexec /usr/local/bin/travel-mode enable
-sudo reboot
-
-# Disable
-pkexec /usr/local/bin/travel-mode disable
-sudo reboot
 ```
 
 ## License
 
 MIT
-# travel-mode-extension

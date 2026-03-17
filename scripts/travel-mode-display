@@ -1,19 +1,30 @@
 #!/usr/bin/env python3
 """
-Travel Mode Display Configuration
-Sets eDP-1 to 1600x900@60Hz and disables external monitors.
-Runs as user autostart — requires python3-dbus.
+Travel Mode Display Configuration.
+Sets eDP-1 to 1600x900 ~60Hz (only the built-in panel), disables externals.
+Runs as user autostart after login. Requires python3-dbus.
 """
 import os, sys, time
 
 FLAG = "/etc/travel-mode-active"
 
-def enable_travel_display():
+TARGET_RES = (1600, 900)
+TARGET_HZ_MIN = 59.0
+TARGET_HZ_MAX = 61.0
+
+FALLBACK_RES = (1920, 1080)
+FALLBACK_HZ_MIN = 59.0
+FALLBACK_HZ_MAX = 61.0
+
+
+def apply_display():
     import dbus
 
     bus = dbus.SessionBus()
-    obj = bus.get_object("org.gnome.Mutter.DisplayConfig",
-                         "/org/gnome/Mutter/DisplayConfig")
+    obj = bus.get_object(
+        "org.gnome.Mutter.DisplayConfig",
+        "/org/gnome/Mutter/DisplayConfig",
+    )
     iface = dbus.Interface(obj, "org.gnome.Mutter.DisplayConfig")
 
     state = iface.GetCurrentState()
@@ -22,39 +33,37 @@ def enable_travel_display():
 
     edp_connector = None
     target_mode = None
+    fallback_mode = None
 
     for monitor in monitors:
         connector = str(monitor[0][0])
-        modes = monitor[1]
-        if "eDP" in connector:
-            edp_connector = connector
-            for mode in modes:
-                mode_id = str(mode[0])
-                w, h = int(mode[1]), int(mode[2])
-                refresh = float(mode[3])
-                if w == 1600 and h == 900 and 59.0 <= refresh <= 61.0:
+        if "eDP" not in connector:
+            continue
+
+        edp_connector = connector
+        for mode in monitor[1]:
+            mode_id = str(mode[0])
+            w, h = int(mode[1]), int(mode[2])
+            refresh = float(mode[3])
+
+            if w == TARGET_RES[0] and h == TARGET_RES[1]:
+                if TARGET_HZ_MIN <= refresh <= TARGET_HZ_MAX:
                     target_mode = mode_id
-                    break
+
+            if w == FALLBACK_RES[0] and h == FALLBACK_RES[1]:
+                if FALLBACK_HZ_MIN <= refresh <= FALLBACK_HZ_MAX and fallback_mode is None:
+                    fallback_mode = mode_id
+
+        break
 
     if not edp_connector:
         print("ERROR: No eDP monitor found", file=sys.stderr)
-        sys.exit(1)
+        return False
 
-    if not target_mode:
-        print("WARNING: 1600x900@60 not available, falling back to 1920x1080@60")
-        for monitor in monitors:
-            if "eDP" in str(monitor[0][0]):
-                for mode in monitor[1]:
-                    w, h = int(mode[1]), int(mode[2])
-                    refresh = float(mode[3])
-                    if w == 1920 and h == 1080 and 59.0 <= refresh <= 61.0:
-                        target_mode = str(mode[0])
-                        break
-                break
-
-    if not target_mode:
-        print("ERROR: No suitable display mode found", file=sys.stderr)
-        sys.exit(1)
+    chosen = target_mode or fallback_mode
+    if not chosen:
+        print("ERROR: No suitable mode found", file=sys.stderr)
+        return False
 
     logical_monitors = dbus.Array([
         dbus.Struct([
@@ -66,30 +75,35 @@ def enable_travel_display():
             dbus.Array([
                 dbus.Struct([
                     dbus.String(edp_connector),
-                    dbus.String(target_mode),
-                    dbus.Dictionary({}, signature="sv")
-                ], signature="ssa{sv}")
-            ], signature="(ssa{sv})")
-        ], signature="iidub a(ssa{sv})")
+                    dbus.String(chosen),
+                    dbus.Dictionary({}, signature="sv"),
+                ], signature="ssa{sv}"),
+            ], signature="(ssa{sv})"),
+        ], signature="iidub a(ssa{sv})"),
     ], signature="(iiduba(ssa{sv}))")
-
-    props = dbus.Dictionary({}, signature="sv")
 
     iface.ApplyMonitorsConfig(
         dbus.UInt32(serial),
-        dbus.UInt32(2),
+        dbus.UInt32(2),  # persistent
         logical_monitors,
-        props
+        dbus.Dictionary({}, signature="sv"),
     )
-    print(f"Applied: {edp_connector} @ {target_mode}")
+    print(f"OK: {edp_connector} @ {chosen}")
+    return True
+
 
 if __name__ == "__main__":
     if not os.path.exists(FLAG):
         sys.exit(0)
 
-    time.sleep(4)
-    try:
-        enable_travel_display()
-    except Exception as e:
-        print(f"Display config error: {e}", file=sys.stderr)
-        sys.exit(1)
+    # Retry with backoff — session might not be fully ready yet
+    for delay in [3, 5, 8]:
+        time.sleep(delay)
+        try:
+            if apply_display():
+                sys.exit(0)
+        except Exception as e:
+            print(f"Attempt failed (waited {delay}s): {e}", file=sys.stderr)
+
+    print("ERROR: All attempts to configure display failed", file=sys.stderr)
+    sys.exit(1)
