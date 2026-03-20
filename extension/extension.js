@@ -3,7 +3,6 @@ import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
-import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as QuickSettings from 'resource:///org/gnome/shell/ui/quickSettings.js';
@@ -19,115 +18,126 @@ const ICON_NAME = 'power-profile-power-saver-symbolic';
 const TravelModeOverlay = GObject.registerClass(
 class TravelModeOverlay extends St.Widget {
     _init() {
+        const monitor = Main.layoutManager.primaryMonitor;
         super._init({
             reactive: true,
             can_focus: true,
             track_hover: false,
-            x_expand: true,
-            y_expand: true,
+            x: monitor.x,
+            y: monitor.y,
+            width: monitor.width,
+            height: monitor.height,
         });
 
-        this.add_constraint(new Clutter.BindConstraint({
-            source: global.stage,
-            coordinate: Clutter.BindCoordinate.ALL,
-        }));
-
-        this._bg = new St.Widget({
-            style: 'background-color: rgba(0, 0, 0, 0.92);',
+        // Opaque dark background
+        this._bg = new St.Bin({
+            style: 'background-color: rgba(0, 0, 0, 0.94);',
             x_expand: true,
             y_expand: true,
+            width: monitor.width,
+            height: monitor.height,
         });
-        this._bg.add_constraint(new Clutter.BindConstraint({
-            source: this,
-            coordinate: Clutter.BindCoordinate.ALL,
-        }));
         this.add_child(this._bg);
 
-        const centerBox = new St.BoxLayout({
+        // Center content using Bin + BoxLayout
+        const centerBin = new St.Bin({
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.CENTER,
+            width: monitor.width,
+            height: monitor.height,
+        });
+        this.add_child(centerBin);
+
+        const content = new St.BoxLayout({
             vertical: true,
             x_align: Clutter.ActorAlign.CENTER,
             y_align: Clutter.ActorAlign.CENTER,
-            x_expand: true,
-            y_expand: true,
-            style: 'spacing: 24px; padding: 48px;',
+            style: 'spacing: 20px;',
         });
-        this.add_child(centerBox);
+        centerBin.set_child(content);
 
-        this._icon = new St.Icon({
+        // Icon
+        content.add_child(new St.Icon({
             icon_name: ICON_NAME,
             icon_size: 64,
-            style: 'color: #8ff0a4; margin-bottom: 8px;',
+            style: 'color: #8ff0a4;',
             x_align: Clutter.ActorAlign.CENTER,
-        });
-        centerBox.add_child(this._icon);
+        }));
 
+        // Title
         this._title = new St.Label({
             text: 'Travel Mode',
-            style: 'font-size: 28px; font-weight: bold; color: white; text-align: center;',
+            style: 'font-size: 28px; font-weight: bold; color: white;',
             x_align: Clutter.ActorAlign.CENTER,
         });
-        centerBox.add_child(this._title);
+        content.add_child(this._title);
 
+        // Warning
         this._subtitle = new St.Label({
             text: 'Do not turn off your computer',
-            style: 'font-size: 15px; color: #f66151; font-weight: bold; text-align: center;',
+            style: 'font-size: 15px; color: #f66151; font-weight: bold;',
             x_align: Clutter.ActorAlign.CENTER,
         });
-        centerBox.add_child(this._subtitle);
+        content.add_child(this._subtitle);
 
-        // Progress bar container
-        const barContainer = new St.BoxLayout({
-            style: 'width: 420px; height: 8px; background-color: rgba(255,255,255,0.15); border-radius: 4px;',
+        // Progress bar track
+        const barTrack = new St.Bin({
+            style: 'background-color: rgba(255,255,255,0.12); border-radius: 5px; margin-top: 8px;',
+            width: 420,
+            height: 10,
             x_align: Clutter.ActorAlign.CENTER,
         });
-        centerBox.add_child(barContainer);
+        content.add_child(barTrack);
 
         this._progressBar = new St.Widget({
-            style: 'background-color: #8ff0a4; border-radius: 4px; height: 8px; width: 0px;',
+            style: 'background-color: #8ff0a4; border-radius: 5px;',
+            width: 0,
+            height: 10,
         });
-        barContainer.add_child(this._progressBar);
+        barTrack.set_child(this._progressBar);
 
+        // Percent
         this._percentLabel = new St.Label({
             text: '0%',
-            style: 'font-size: 18px; color: rgba(255,255,255,0.8); font-weight: bold; text-align: center;',
+            style: 'font-size: 20px; color: rgba(255,255,255,0.85); font-weight: bold;',
             x_align: Clutter.ActorAlign.CENTER,
         });
-        centerBox.add_child(this._percentLabel);
+        content.add_child(this._percentLabel);
 
+        // Status message
         this._statusLabel = new St.Label({
-            text: 'Initializing...',
-            style: 'font-size: 14px; color: rgba(255,255,255,0.7); text-align: center;',
+            text: 'Authenticating...',
+            style: 'font-size: 14px; color: rgba(255,255,255,0.6);',
             x_align: Clutter.ActorAlign.CENTER,
         });
-        centerBox.add_child(this._statusLabel);
+        content.add_child(this._statusLabel);
 
-        // Log area
+        // Log scroll
         const logScroll = new St.ScrollView({
-            style: 'width: 500px; max-height: 200px; margin-top: 16px;',
+            style: 'margin-top: 12px;',
             x_align: Clutter.ActorAlign.CENTER,
         });
-        centerBox.add_child(logScroll);
+        logScroll.set_size(520, 180);
+        content.add_child(logScroll);
 
         this._logBox = new St.BoxLayout({
             vertical: true,
-            style: 'spacing: 4px;',
+            style: 'spacing: 3px;',
         });
         logScroll.set_child(this._logBox);
+        this._logScroll = logScroll;
 
-        // Block all keyboard/mouse
+        // Block input
         this.connect('key-press-event', () => Clutter.EVENT_STOP);
         this.connect('key-release-event', () => Clutter.EVENT_STOP);
         this.connect('button-press-event', () => Clutter.EVENT_STOP);
         this.connect('button-release-event', () => Clutter.EVENT_STOP);
         this.connect('scroll-event', () => Clutter.EVENT_STOP);
-        this.connect('motion-event', () => Clutter.EVENT_STOP);
     }
 
     show() {
-        global.stage.add_child(this);
+        Main.layoutManager.addTopChrome(this);
         this.grab_key_focus();
-
-        // Push a modal to block all input globally
         this._grab = Main.pushModal(this, {
             actionMode: Shell.ActionMode.SYSTEM_MODAL,
         });
@@ -138,38 +148,39 @@ class TravelModeOverlay extends St.Widget {
             Main.popModal(this._grab);
             this._grab = null;
         }
-        global.stage.remove_child(this);
+        Main.layoutManager.removeChrome(this);
     }
 
     updateProgress(percent, message) {
         this._percentLabel.text = `${percent}%`;
         this._statusLabel.text = message;
-        const barWidth = Math.round(420 * percent / 100);
-        this._progressBar.style = `background-color: #8ff0a4; border-radius: 4px; height: 8px; width: ${barWidth}px;`;
+        this._progressBar.width = Math.round(420 * percent / 100);
 
-        const logLine = new St.Label({
-            text: `[${percent}%] ${message}`,
-            style: 'font-size: 12px; color: rgba(255,255,255,0.5); font-family: monospace;',
+        const line = new St.Label({
+            text: `  [${String(percent).padStart(3)}%]  ${message}`,
+            style: 'font-size: 11px; color: rgba(255,255,255,0.45); font-family: monospace;',
         });
-        this._logBox.add_child(logLine);
+        this._logBox.add_child(line);
+
+        // Auto-scroll to bottom
+        const adj = this._logScroll.vscroll?.adjustment;
+        if (adj) adj.value = adj.upper;
     }
 
     setFinished(isEnable) {
-        this._icon.style = 'color: #8ff0a4; margin-bottom: 8px;';
         this._title.text = isEnable ? 'Travel Mode Enabled' : 'Travel Mode Disabled';
         this._subtitle.text = 'Rebooting now...';
-        this._subtitle.style = 'font-size: 15px; color: #8ff0a4; font-weight: bold; text-align: center;';
+        this._subtitle.style = 'font-size: 15px; color: #8ff0a4; font-weight: bold;';
         this._percentLabel.text = '100%';
         this._statusLabel.text = 'Forcing reboot...';
-        this._progressBar.style = 'background-color: #8ff0a4; border-radius: 4px; height: 8px; width: 420px;';
+        this._progressBar.width = 420;
     }
 
     setError(msg) {
         this._title.text = 'Error';
         this._subtitle.text = msg;
-        this._subtitle.style = 'font-size: 15px; color: #f66151; font-weight: bold; text-align: center;';
+        this._subtitle.style = 'font-size: 15px; color: #f66151; font-weight: bold;';
         this._statusLabel.text = 'Closing in 5 seconds...';
-
         GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 5, () => {
             this.hide();
             return GLib.SOURCE_REMOVE;
@@ -185,7 +196,6 @@ class TravelModeDialog extends ModalDialog.ModalDialog {
         super._init({styleClass: 'modal-dialog'});
 
         const isEnable = action === 'enable';
-
         const box = new St.BoxLayout({
             vertical: true,
             styleClass: 'modal-dialog-content-box',
@@ -264,7 +274,8 @@ class TravelModeToggle extends QuickSettings.QuickToggle {
 
         const dialog = new TravelModeDialog(action, () => {
             this._processing = true;
-            this._runWithOverlay(action);
+            // Start pkexec (auth prompt shows). Overlay appears AFTER auth.
+            this._startProcess(action);
         });
 
         dialog.connect('closed', () => {
@@ -275,71 +286,93 @@ class TravelModeToggle extends QuickSettings.QuickToggle {
         dialog.open();
     }
 
-    _runWithOverlay(action) {
-        const overlay = new TravelModeOverlay();
-        overlay.show();
-        overlay.updateProgress(0, `${action === 'enable' ? 'Enabling' : 'Disabling'} Travel Mode...`);
-
+    _startProcess(action) {
         try {
             const proc = Gio.Subprocess.new(
                 ['pkexec', TRAVEL_MODE_BIN, action],
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
             );
 
-            // Read stdout line-by-line for progress
             const stdout = proc.get_stdout_pipe();
-            this._readLines(stdout, overlay);
+            const dataStream = Gio.DataInputStream.new(stdout);
 
-            proc.wait_async(null, (_proc, res) => {
+            // Wait for FIRST line of output = auth succeeded → show overlay
+            dataStream.read_line_async(GLib.PRIORITY_DEFAULT, null, (_stream, res) => {
                 try {
-                    _proc.wait_finish(res);
-                    this._processing = false;
+                    const [firstLine] = _stream.read_line_finish_utf8(res);
 
-                    if (_proc.get_successful()) {
-                        overlay.setFinished(action === 'enable');
-                        // Hard reboot after 2 seconds
-                        GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 2, () => {
-                            this._hardReboot();
-                            return GLib.SOURCE_REMOVE;
-                        });
-                    } else {
+                    if (firstLine === null) {
+                        // Process ended without output → auth was cancelled
+                        this._processing = false;
                         this.checked = !this.checked;
-                        overlay.setError('Operation failed. Check system logs.');
+                        return;
                     }
+
+                    // Auth passed! NOW show the overlay
+                    const overlay = new TravelModeOverlay();
+                    overlay.show();
+
+                    // Process the first line
+                    this._processLine(firstLine, overlay);
+
+                    // Continue reading remaining lines
+                    this._readRemainingLines(dataStream, overlay);
+
+                    // Wait for process to finish
+                    proc.wait_async(null, (_proc, waitRes) => {
+                        try {
+                            _proc.wait_finish(waitRes);
+                            this._processing = false;
+
+                            if (_proc.get_successful()) {
+                                overlay.setFinished(action === 'enable');
+                                GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 2, () => {
+                                    this._hardReboot();
+                                    return GLib.SOURCE_REMOVE;
+                                });
+                            } else {
+                                this.checked = !this.checked;
+                                overlay.setError('Operation failed. Check system logs.');
+                            }
+                        } catch (e) {
+                            this._processing = false;
+                            this.checked = !this.checked;
+                            overlay.setError(e.message);
+                        }
+                    });
                 } catch (e) {
+                    // Auth cancelled or error
                     this._processing = false;
                     this.checked = !this.checked;
-                    overlay.setError(e.message);
                 }
             });
         } catch (e) {
             this._processing = false;
             this.checked = !this.checked;
-            overlay.setError(e.message);
         }
     }
 
-    _readLines(stream, overlay) {
-        const dataStream = Gio.DataInputStream.new(stream);
+    _processLine(line, overlay) {
+        if (line && line.startsWith('STEP|')) {
+            const parts = line.split('|');
+            if (parts.length >= 3) {
+                const percent = parseInt(parts[1], 10);
+                const msg = parts.slice(2).join('|');
+                overlay.updateProgress(percent, msg);
+            }
+        }
+    }
 
+    _readRemainingLines(dataStream, overlay) {
         const readNext = () => {
             dataStream.read_line_async(GLib.PRIORITY_DEFAULT, null, (_stream, res) => {
                 try {
                     const [line] = _stream.read_line_finish_utf8(res);
                     if (line === null) return;
-
-                    // Parse STEP|percent|message
-                    if (line.startsWith('STEP|')) {
-                        const parts = line.split('|');
-                        if (parts.length >= 3) {
-                            const percent = parseInt(parts[1], 10);
-                            const msg = parts.slice(2).join('|');
-                            overlay.updateProgress(percent, msg);
-                        }
-                    }
+                    this._processLine(line, overlay);
                     readNext();
                 } catch (e) {
-                    // Stream closed
+                    // Stream ended
                 }
             });
         };
@@ -347,14 +380,12 @@ class TravelModeToggle extends QuickSettings.QuickToggle {
     }
 
     _hardReboot() {
-        // auth_admin_keep: pkexec reuses cached auth from the travel-mode call
         try {
             Gio.Subprocess.new(
                 ['pkexec', TRAVEL_MODE_BIN, 'force-reboot'],
                 Gio.SubprocessFlags.NONE
             );
         } catch (e) {
-            // Fallback: logind (non-interactive = skip confirmation dialogs)
             try {
                 const bus = Gio.DBusProxy.new_for_bus_sync(
                     Gio.BusType.SYSTEM,

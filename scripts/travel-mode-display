@@ -53,7 +53,6 @@ def apply_display():
             if w == FALLBACK_RES[0] and h == FALLBACK_RES[1]:
                 if FALLBACK_HZ_MIN <= refresh <= FALLBACK_HZ_MAX and fallback_mode is None:
                     fallback_mode = mode_id
-
         break
 
     if not edp_connector:
@@ -62,7 +61,7 @@ def apply_display():
 
     chosen = target_mode or fallback_mode
     if not chosen:
-        print("ERROR: No suitable mode found", file=sys.stderr)
+        print("ERROR: No suitable display mode found", file=sys.stderr)
         return False
 
     logical_monitors = dbus.Array([
@@ -77,10 +76,10 @@ def apply_display():
                     dbus.String(edp_connector),
                     dbus.String(chosen),
                     dbus.Dictionary({}, signature="sv"),
-                ], signature="ssa{sv}"),
-            ], signature="(ssa{sv})"),
-        ], signature="iidub a(ssa{sv})"),
-    ], signature="(iiduba(ssa{sv}))")
+                ], signature="(ssa{sv})"),
+            ], signature="a(ssa{sv})"),
+        ], signature="(iiduba(ssa{sv}))"),
+    ], signature="a(iiduba(ssa{sv}))")
 
     iface.ApplyMonitorsConfig(
         dbus.UInt32(serial),
@@ -96,7 +95,6 @@ if __name__ == "__main__":
     if not os.path.exists(FLAG):
         sys.exit(0)
 
-    # Retry with backoff — session might not be fully ready yet
     for delay in [3, 5, 8]:
         time.sleep(delay)
         try:
